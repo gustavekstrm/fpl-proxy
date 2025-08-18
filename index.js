@@ -6,7 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const API_BASE = "https://fantasy.premierleague.com/api";
 
-// Tillåt endast din frontend
+// ✅ Only allow requests from GitHub Pages
 const corsOptions = {
   origin: "https://gustavekstrm.github.io",
   optionsSuccessStatus: 200
@@ -14,10 +14,10 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// Den här fångar ALLT efter /api/
+// ✅ Catch-all route for any /api/* requests
 app.get("/api/*", async (req, res) => {
-  const apiPath = req.params[0]; // Fångar hela pathen efter /api/
-  const targetUrl = `${API_BASE}/${apiPath}`;
+  const targetPath = req.params[0];
+  const targetUrl = `${API_BASE}/${targetPath}`;
 
   try {
     const response = await axios.get(targetUrl, {
@@ -27,10 +27,9 @@ app.get("/api/*", async (req, res) => {
     });
     res.json(response.data);
   } catch (error) {
-    res.status(error.response?.status || 500).json({
-      error: "Proxy error",
-      details: error.message
-    });
+    res
+      .status(error.response?.status || 500)
+      .json({ error: "Proxy error", details: error.message });
   }
 });
 
