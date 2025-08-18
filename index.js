@@ -6,7 +6,13 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const API_BASE = "https://fantasy.premierleague.com/api";
 
-app.use(cors());
+// ✅ Tillåt endast din frontend som origin
+const corsOptions = {
+  origin: "https://gustavekstrm.github.io",
+  optionsSuccessStatus: 200
+};
+
+app.use(cors(corsOptions));
 
 app.get("/api/:path", async (req, res) => {
   const path = req.params.path;
