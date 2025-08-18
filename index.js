@@ -12,7 +12,11 @@ app.get("/api/:path", async (req, res) => {
   const path = req.params.path;
   const targetUrl = `${API_BASE}/${path}`;
   try {
-    const response = await axios.get(targetUrl);
+    const response = await axios.get(targetUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0"
+      }
+    });
     res.json(response.data);
   } catch (error) {
     res
@@ -26,7 +30,11 @@ app.get("/api/:path/:subpath", async (req, res) => {
   const subpath = req.params.subpath;
   const targetUrl = `${API_BASE}/${path}/${subpath}`;
   try {
-    const response = await axios.get(targetUrl);
+    const response = await axios.get(targetUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0"
+      }
+    });
     res.json(response.data);
   } catch (error) {
     res
