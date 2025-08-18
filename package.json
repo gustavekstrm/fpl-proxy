@@ -1,7 +1,7 @@
 {
   "name": "orebrofpl-proxy",
   "version": "1.0.0",
-  "description": "",
+  "description": "Proxy server for Örebro FPL to bypass CORS issues",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -16,4 +16,5 @@
     "express": "^5.1.0"
   }
 }
+
 
