@@ -203,85 +203,6 @@ function cacheControlForPath(p) {
 }
 
 // -------------------------------------------
-// Aggregate endpoints
-// -------------------------------------------
-
-// /api/aggregate/summary?ids=1,2,3
-app.get("/api/aggregate/summary", async (req, res) => {
-  const ids = String(req.query.ids || "")
-    .split(",").map(x => parseInt(x,10)).filter(Boolean);
-  if (!ids.length) return res.status(400).json({ error: "ids required" });
-
-  const results = [];
-  for (const id of ids) {
-    const path = `entry/${id}/`;
-    const url = new URL(path, API_BASE).toString();
-    const headers = {
-      "User-Agent": req.get("User-Agent") || "Mozilla/5.0",
-      "Accept": "application/json, text/plain, */*",
-      "Referer": "https://fantasy.premierleague.com/",
-      "Origin": "https://fantasy.premierleague.com",
-      "X-Requested-With": "XMLHttpRequest",
-    };
-    try {
-      const fresh = getFresh(url);
-      if (fresh) { results.push({ id, ok: true, data: fresh }); continue; }
-      const resp = await fetchUpstream(url, headers, 3, false);
-      if (resp.status >= 200 && resp.status < 300) {
-        setCache(url, resp.data, TTL.SUMMARY);
-        results.push({ id, ok: true, data: resp.data });
-      } else {
-        const stale = getStale(url);
-        if (stale) results.push({ id, ok: true, data: stale, stale: true, upstream: resp.status });
-        else results.push({ id, ok: false, status: resp.status });
-      }
-    } catch (e) {
-      const stale = getStale(url);
-      if (stale) results.push({ id, ok: true, data: stale, stale: true, upstream: "ERR" });
-      else results.push({ id, ok: false, status: "ERR" });
-    }
-  }
-  res.json({ results });
-});
-
-// /api/aggregate/history?ids=1,2,3&gw=1
-app.get("/api/aggregate/history", async (req, res) => {
-  const ids = String(req.query.ids || "")
-    .split(",").map(x => parseInt(x,10)).filter(Boolean);
-  const gw = parseInt(req.query.gw, 10) || 1;
-  if (!ids.length) return res.status(400).json({ error: "ids required" });
-
-  const results = [];
-  for (const id of ids) {
-    const path = `entry/${id}/history/`;
-    const url = new URL(path, API_BASE).toString();
-    const headers = {
-      "User-Agent": req.get("User-Agent") || "Mozilla/5.0",
-      "Accept": "application/json, text/plain, */*",
-      "Referer": "https://fantasy.premierleague.com/",
-      "Origin": "https://fantasy.premierleague.com",
-      "X-Requested-With": "XMLHttpRequest",
-    };
-    try {
-      const fresh = getFresh(url);
-      const data = fresh ? fresh : (await fetchUpstream(url, headers, 3, false)).data;
-      if (!fresh) setCache(url, data, TTL.HISTORY);
-      const row = (data?.current || []).find(x => x.event === gw) || null;
-      results.push({ id, ok: true, points: row?.points ?? null, raw: row || null });
-    } catch (e) {
-      const stale = getStale(url);
-      if (stale) {
-        const row = (stale?.current || []).find(x => x.event === gw) || null;
-        results.push({ id, ok: true, points: row?.points ?? null, raw: row || null, stale: true });
-      } else {
-        results.push({ id, ok: false });
-      }
-    }
-  }
-  res.json({ results, gw });
-});
-
-// -------------------------------------------
 // Main proxy handler (Express 5 safe, no wildcard syntax)
 // -------------------------------------------
 app.use("/api", async (req, res) => {
@@ -291,6 +212,84 @@ app.use("/api", async (req, res) => {
 
   try {
     const pathWithQuery = req.originalUrl.replace(/^\/api\/?/, "");
+    
+    // Handle aggregate endpoints
+    if (pathWithQuery.startsWith("aggregate/")) {
+      if (pathWithQuery === "aggregate/summary") {
+        const ids = String(req.query.ids || "")
+          .split(",").map(x => parseInt(x,10)).filter(Boolean);
+        if (!ids.length) return res.status(400).json({ error: "ids required" });
+
+        const results = [];
+        for (const id of ids) {
+          const path = `entry/${id}/`;
+          const url = new URL(path, API_BASE).toString();
+          const headers = {
+            "User-Agent": req.get("User-Agent") || "Mozilla/5.0",
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://fantasy.premierleague.com/",
+            "Origin": "https://fantasy.premierleague.com",
+            "X-Requested-With": "XMLHttpRequest",
+          };
+          try {
+            const fresh = getFresh(url);
+            if (fresh) { results.push({ id, ok: true, data: fresh }); continue; }
+            const resp = await fetchUpstream(url, headers, 3, false);
+            if (resp.status >= 200 && resp.status < 300) {
+              setCache(url, resp.data, TTL.SUMMARY);
+              results.push({ id, ok: true, data: resp.data });
+            } else {
+              const stale = getStale(url);
+              if (stale) results.push({ id, ok: true, data: stale, stale: true, upstream: resp.status });
+              else results.push({ id, ok: false, status: resp.status });
+            }
+          } catch (e) {
+            const stale = getStale(url);
+            if (stale) results.push({ id, ok: true, data: stale, stale: true, upstream: "ERR" });
+            else results.push({ id, ok: false, status: "ERR" });
+          }
+        }
+        return res.json({ results });
+      }
+      
+      if (pathWithQuery === "aggregate/history") {
+        const ids = String(req.query.ids || "")
+          .split(",").map(x => parseInt(x,10)).filter(Boolean);
+        const gw = parseInt(req.query.gw, 10) || 1;
+        if (!ids.length) return res.status(400).json({ error: "ids required" });
+
+        const results = [];
+        for (const id of ids) {
+          const path = `entry/${id}/history/`;
+          const url = new URL(path, API_BASE).toString();
+          const headers = {
+            "User-Agent": req.get("User-Agent") || "Mozilla/5.0",
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://fantasy.premierleague.com/",
+            "Origin": "https://fantasy.premierleague.com",
+            "X-Requested-With": "XMLHttpRequest",
+          };
+          try {
+            const fresh = getFresh(url);
+            const data = fresh ? fresh : (await fetchUpstream(url, headers, 3, false)).data;
+            if (!fresh) setCache(url, data, TTL.HISTORY);
+            const row = (data?.current || []).find(x => x.event === gw) || null;
+            results.push({ id, ok: true, points: row?.points ?? null, raw: row || null });
+          } catch (e) {
+            const stale = getStale(url);
+            if (stale) {
+              const row = (stale?.current || []).find(x => x.event === gw) || null;
+              results.push({ id, ok: true, points: row?.points ?? null, raw: row || null, stale: true });
+            } else {
+              results.push({ id, ok: false });
+            }
+          }
+        }
+        return res.json({ results, gw });
+      }
+    }
+
+    // Regular proxy handling
     const targetUrl = new URL(pathWithQuery, API_BASE).toString();
     const sensitive = isSensitivePath(pathWithQuery);
     const T = ttlFor(pathWithQuery);
