@@ -1,38 +1,54 @@
 const express = require("express");
-const axios = require("axios");
 const cors = require("cors");
+const axios = require("axios");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const API_BASE = "https://fantasy.premierleague.com/api";
 
-// ✅ Only allow requests from GitHub Pages
-const corsOptions = {
-  origin: "https://gustavekstrm.github.io",
-  optionsSuccessStatus: 200
-};
+const ALLOWED_ORIGINS = ["https://gustavekstrm.github.io"];
 
-app.use(cors(corsOptions));
+app.use(cors({
+  origin(origin, cb) {
+    if (!origin) return cb(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    return cb(new Error("Not allowed by CORS"));
+  },
+  methods: ["GET", "HEAD"],
+}));
 
-// ✅ Catch-all route for any /api/* requests
+app.get("/healthz", (req, res) => res.status(200).json({ ok: true }));
+
+const API_BASE = "https://fantasy.premierleague.com/api/";
+
+function cacheControlForPath(p) {
+  const lower = p.toLowerCase();
+  if (lower.includes("/picks/") || lower.includes("live") || lower.startsWith("event"))
+    return "public, max-age=30";
+  return "public, s-maxage=300, stale-while-revalidate=60";
+}
+
 app.get("/api/*", async (req, res) => {
-  const targetPath = req.params[0];
-  const targetUrl = `${API_BASE}/${targetPath}`;
-
   try {
-    const response = await axios.get(targetUrl, {
+    const pathWithQuery = req.originalUrl.replace(/^\/api\/?/, "");
+    const targetUrl = new URL(pathWithQuery, API_BASE).toString();
+
+    const upstream = await axios.get(targetUrl, {
       headers: {
-        "User-Agent": "Mozilla/5.0"
-      }
+        "User-Agent": req.get("User-Agent") || "Mozilla/5.0",
+        "Accept": "application/json",
+        "Referer": "https://fantasy.premierleague.com/"
+      },
+      validateStatus: () => true,
     });
-    res.json(response.data);
-  } catch (error) {
-    res
-      .status(error.response?.status || 500)
-      .json({ error: "Proxy error", details: error.message });
+
+    res.set("Cache-Control", cacheControlForPath(pathWithQuery));
+    res.status(upstream.status).json(upstream.data);
+  } catch (err) {
+    console.error("Proxy error:", err?.response?.status, err?.message);
+    res.status(502).json({ error: "Upstream request failed", details: err?.message });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Proxy server running on port ${PORT}`);
+  console.log(`FPL proxy listening on ${PORT}`);
 });
