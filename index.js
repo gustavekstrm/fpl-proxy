@@ -107,29 +107,39 @@ function ttlFor(path) {
   return 2 * 60 * 1000; // default 2m
 }
 
-// ---- Upstream with retries + queue ----
+// ---- Upstream with retries + queue + header variants ----
 async function fetchUpstream(targetUrl, headers, attempts = 3, sensitive = false) {
   return schedule(async () => {
+    const pass1 = headers; // browser-like
+    const pass2 = {        // lean: no Origin/Referer/X-Requested-With
+      "User-Agent": headers["User-Agent"] || "Mozilla/5.0",
+      "Accept": "application/json, text/plain, */*",
+      "Accept-Language": headers["Accept-Language"] || "en-US,en;q=0.9"
+    };
+
     let last;
+    // Try pass1 then pass2 for each attempt window
     for (let i = 0; i < attempts; i++) {
-      try {
-        const resp = await axios.get(targetUrl, {
-          headers,
-          httpAgent: keepAliveHttp,
-          httpsAgent: keepAliveHttps,
-          validateStatus: () => true,
-          timeout: 15000,
-        });
-        const s = resp.status;
-        const retryable = (s === 429) || (s >= 500) || (s === 403 && sensitive);
-        if (!retryable) return resp;
-        last = resp;
-      } catch (e) {
-        last = e;
+      for (const h of [pass1, pass2]) {
+        try {
+          const resp = await axios.get(targetUrl, {
+            headers: h,
+            httpAgent: keepAliveHttp,
+            httpsAgent: keepAliveHttps,
+            validateStatus: () => true,
+            timeout: 15000,
+          });
+          const s = resp.status;
+          const retryable = (s === 429) || (s >= 500) || (s === 403 && sensitive);
+          if (!retryable) return resp;
+          last = resp;
+        } catch (e) {
+          last = e;
+        }
       }
-      await new Promise(r => setTimeout(r, 500 * (i + 1) + Math.floor(Math.random()*300)));
+      await new Promise(r => setTimeout(r, 500 * (i + 1) + Math.floor(Math.random() * 300)));
     }
-    throw last; // last response or error
+    throw last;
   });
 }
 
@@ -155,6 +165,15 @@ app.use(cors({
   },
   methods: ["GET", "HEAD"],
 }));
+
+// Expose custom headers for the browser to read
+app.use((req, res, next) => {
+  res.set('Access-Control-Expose-Headers', 'X-Proxy-Cache,X-Proxy-Stale,X-Proxy-Upstream-Status,X-Proxy-Soft');
+  next();
+});
+
+// Allow OPTIONS just in case
+app.options('/api/*', (req, res) => res.sendStatus(204));
 
 // Health & readiness
 app.get("/healthz", (req, res) => res.status(200).json({ ok: true }));
@@ -319,8 +338,42 @@ app.use("/api", async (req, res) => {
         res.set("X-Proxy-Stale", "1");
         res.set("X-Proxy-Upstream-Status", String(upstream.status));
         res.set("Cache-Control", cacheControlForPath(pathWithQuery));
-        return res.status(200).json(stale);
+        return res.status(200).json(stale); // serve stale 200
       }
+
+      // ---- NEW: soft-OK for 403 on entry summary/history/picks ----
+      const pathL = pathWithQuery.toLowerCase();
+      const is403 = upstream.status === 403;
+      const softable =
+        is403 && (
+          pathL.includes('/history/') ||
+          pathL.includes('/picks/')   ||
+          (/^entry\/\d+\/?$/.test(pathL))
+        );
+
+      if (softable) {
+        res.set("X-Proxy-Soft", "1");
+        res.set("X-Proxy-Upstream-Status", "403");
+        res.set("Cache-Control", cacheControlForPath(pathWithQuery));
+
+        // Minimal safe JSON bodies (UI can render gracefully)
+        if (pathL.includes('/history/')) {
+          return res.status(200).json({ current: [], past: [], chips: [] });
+        }
+        if (pathL.includes('/picks/')) {
+          return res.status(200).json({ entry_history: null, picks: [] });
+        }
+        // entry summary fallback
+        if (/^entry\/\d+\/?$/.test(pathL)) {
+          return res.status(200).json({
+            player_first_name: "",
+            player_last_name: "",
+            name: ""
+          });
+        }
+      }
+      // --------------------------------------
+
       console.warn(`[proxy] ${upstream.status} ${targetUrl}`);
       res.set("Cache-Control", cacheControlForPath(pathWithQuery));
       return res.status(upstream.status).send(upstream.data);
