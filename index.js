@@ -6,7 +6,16 @@ const compression = require("compression");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const morgan = require("morgan");
-const LRU = require("lru-cache");
+// Version-safe lru-cache import for v10+ and older versions
+let LRUCacheClass;
+try {
+  // v10+ exports { LRUCache }
+  ({ LRUCache: LRUCacheClass } = require("lru-cache"));
+} catch (_) {
+  // very old versions may export the class as default/constructor
+  const legacy = require("lru-cache");
+  LRUCacheClass = legacy.LRUCache || legacy;
+}
 const http = require("http");
 const https = require("https");
 
@@ -60,7 +69,10 @@ const keepAliveHttp = new http.Agent({ keepAlive: true, maxSockets: 50 });
 const keepAliveHttps = new https.Agent({ keepAlive: true, maxSockets: 50 });
 
 // ---- In-memory cache with stale-if-error ----
-const cache = new LRU({ max: 500, ttlAutopurge: true });
+const cache = new LRUCacheClass({
+  max: 500,
+  ttlAutopurge: true, // optional; v10 supports this flag
+});
 
 // TTLs
 const TTL = {
