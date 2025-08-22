@@ -191,9 +191,22 @@ app.use("/api", async (req, res) => {
       if (stale){ res.set("X-Proxy-Stale","1"); res.set("X-Proxy-Upstream-Status", String(upstream.status)); res.set("Cache-Control", cacheControlForPath(pathWithQuery)); return res.status(200).json(stale); }
 
       const l = pathWithQuery.toLowerCase();
-      const softable = upstream.status===403 && ( l.includes('/history/') || l.includes('/picks/') || /^entry\/\d+\/?$/.test(l) );
+      const softable = upstream.status===403 && (
+        l.includes('bootstrap-static') ||
+        l.includes('/history/') ||
+        l.includes('/picks/') ||
+        /^entry\/\d+\/?$/.test(l)
+      );
       if (softable){
         res.set("X-Proxy-Soft","1"); res.set("X-Proxy-Upstream-Status","403"); res.set("Cache-Control", cacheControlForPath(pathWithQuery));
+        if (l.includes('bootstrap-static')) {
+          return res.status(200).json({
+            events: [{ id: 1, is_current: true }],
+            phases: [], teams: [],
+            total_players: 0,
+            elements: [], element_stats: [], element_types: []
+          });
+        }
         if (l.includes('/history/')) return res.status(200).json({ current: [], past: [], chips: [] });
         if (l.includes('/picks/'))   return res.status(200).json({ entry_history: null, picks: [] });
         return res.status(200).json({ player_first_name:"", player_last_name:"", name:"" });
