@@ -195,6 +195,7 @@ app.use("/api", async (req, res) => {
         l.includes('bootstrap-static') ||
         l.includes('/history/') ||
         l.includes('/picks/') ||
+        l.includes('leagues-classic') ||
         /^entry\/\d+\/?$/.test(l)
       );
       if (softable){
@@ -205,6 +206,13 @@ app.use("/api", async (req, res) => {
             phases: [], teams: [],
             total_players: 0,
             elements: [], element_stats: [], element_types: []
+          });
+        }
+        if (l.includes('leagues-classic')) {
+          return res.status(200).json({
+            league: { id: 0, name: "", created: null, closed: false },
+            new_entries: { has_next: false, page: 1, results: [] },
+            standings: { has_next: false, page: 1, results: [] }
           });
         }
         if (l.includes('/history/')) return res.status(200).json({ current: [], past: [], chips: [] });
