@@ -15,14 +15,16 @@ catch { const legacy = require("lru-cache"); LRUCacheClass = legacy.LRUCache || 
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const API_BASE = process.env.FPL_API_BASE || "https://fantasy.premierleague.com/api/";
+// Upstream bases
+const UPSTREAM = process.env.UPSTREAM_BASE || "https://fantasy.premierleague.com";
+const API_BASE = process.env.FPL_API_BASE || new URL("api/", UPSTREAM).toString();
 
 // trust proxy
 app.set("trust proxy", 1);
 
 // CORS
-const DEFAULT_ORIGINS = ["https://gustavekstrm.github.io"];
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || DEFAULT_ORIGINS.join(","))
+const DEFAULT_ORIGINS = ["https://gustavekstrm.github.io", "http://localhost:3000"];
+const ALLOWED_ORIGINS = (process.env.CORS_ALLOW_ORIGINS || DEFAULT_ORIGINS.join(","))
   .split(",").map(s => s.trim()).filter(Boolean);
 
 app.use(helmet({ crossOriginResourcePolicy: false }));
@@ -31,11 +33,17 @@ app.use(morgan("tiny"));
 app.use(cors({
   origin(origin, cb) {
     if (!origin) return cb(null, true);
-    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-    return cb(new Error("Not allowed by CORS"));
+    const ok = ALLOWED_ORIGINS.some(o => o === origin);
+    return ok ? cb(null, true) : cb(new Error("CORS: origin not allowed"));
   },
+  credentials: false,
   methods: ["GET", "HEAD", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Accept", "X-Requested-With"],
+  maxAge: 86400,
 }));
+app.options("*", cors());
+// Explicit Vary for proxies/CDN
+app.use((req, res, next) => { res.setHeader("Vary", "Origin"); next(); });
 
 // browser can read these
 app.use((req, res, next) => {
@@ -44,8 +52,24 @@ app.use((req, res, next) => {
 });
 
 // health
+const { version: PKG_VERSION } = require("./package.json");
+app.get("/health", (req, res) => res.status(200).json({ ok: true, uptime: process.uptime(), version: PKG_VERSION }));
 app.get("/healthz", (req, res) => res.status(200).json({ ok: true }));
 app.get("/readyz",  (req, res) => res.status(200).json({ ready: true }));
+
+// debug routes (non-production only)
+if (process.env.NODE_ENV !== "production") {
+  app.get("/debug/routes", (req, res) => {
+    const routes = [];
+    app._router.stack.forEach((m) => {
+      if (m.route && m.route.path) {
+        const methods = Object.keys(m.route.methods).filter(k => m.route.methods[k]);
+        routes.push({ path: m.route.path, methods });
+      }
+    });
+    res.json({ routes });
+  });
+}
 
 // rate limit only under /api
 app.use("/api", rateLimit({
@@ -74,6 +98,7 @@ const TTL = {
   HISTORY:   Number(process.env.TTL_HISTORY_MS   || 5  * 60 * 1000),
   PICKS:     Number(process.env.TTL_PICKS_MS     || 60 * 1000),
   SUMMARY:   Number(process.env.TTL_SUMMARY_MS   || 24 * 60 * 60 * 1000),
+  ROWS:      60 * 1000,
 };
 const STALE_HOURS = Number(process.env.STALE_HOURS || 12);
 const now = () => Date.now(); const ck = url => `c:${url}`;
@@ -153,6 +178,60 @@ app.get("/api/aggregate/history", async (req, res) => {
     }
   }
   res.json({ results, gw });
+});
+
+// Specific rate limit + soft cache for rows
+const rowsLimiter = rateLimit({ windowMs: 60*1000, max: 60, standardHeaders: true, legacyHeaders: false });
+app.use("/api/aggregate/rows", rowsLimiter);
+
+// New normalized rows endpoint
+app.get("/api/aggregate/rows", async (req, res) => {
+  const gw = parseInt(req.query.gw, 10);
+  const ids = String(req.query.ids||"").split(",").map(x=>parseInt(x,10)).filter(Boolean);
+  if (!gw || !ids.length) return res.status(400).json({ error: "gw and ids required" });
+
+  const key = `rows:${gw}:${ids.slice().sort((a,b)=>a-b).join(',')}`;
+  const cached = cache.get(key);
+  if (cached) {
+    res.set("X-Proxy-Cache", "HIT");
+    res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=120");
+    return res.status(200).json(cached);
+  }
+
+  const headers={"User-Agent": req.get("User-Agent")||"Mozilla/5.0","Accept":"application/json, text/plain, */*","Accept-Language": req.get("Accept-Language")||"en-US,en;q=0.9","Referer":"https://fantasy.premierleague.com/","Origin":"https://fantasy.premierleague.com","X-Requested-With":"XMLHttpRequest"};
+
+  try {
+    // Fetch summaries and histories in batches; concurrency is governed by schedule() inside fetchUpstream
+    const summaryUrls = ids.map(id => new URL(`entry/${id}/`, API_BASE).toString());
+    const historyUrls = ids.map(id => new URL(`entry/${id}/history/`, API_BASE).toString());
+
+    const [summaries, histories] = await Promise.all([
+      Promise.all(summaryUrls.map(u => fetchUpstream(u, headers, 3, false).then(r=>r.data).catch(()=>null))),
+      Promise.all(historyUrls.map(u => fetchUpstream(u, headers, 3, false).then(r=>r.data).catch(()=>null))),
+    ]);
+
+    const rows = ids.map((id, i) => {
+      const s = summaries[i] || {};
+      const h = histories[i] || {};
+      const current = Array.isArray(h.current) ? h.current.find(x => x.event === gw) || null : null;
+      const prev = Array.isArray(h.current) ? h.current.find(x => x.event === (gw-1)) || null : null;
+      const playerName = [s.player_first_name, s.player_last_name].filter(Boolean).join(" ") || "";
+      const teamName = s.name || "";
+      const gwPoints = current?.points ?? null;
+      const totalPoints = current?.total_points ?? null;
+      const overallRank = current?.overall_rank ?? null;
+      const prevOverallRank = prev?.overall_rank ?? null;
+      return { entryId: id, playerName, teamName, gwPoints, totalPoints, overallRank, prevOverallRank };
+    });
+
+    cache.set(key, rows, { ttl: TTL.ROWS });
+    res.set("X-Proxy-Cache", "MISS");
+    res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=120");
+    return res.status(200).json(rows);
+  } catch (e) {
+    console.warn('[proxy][upstream]', { error: e?.message });
+    return res.status(502).json({ error: 'upstream' });
+  }
 });
 
 // ============ Generic /api proxy (no wildcard) ============
